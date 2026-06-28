@@ -1,0 +1,165 @@
+package metrics
+
+import (
+	"net/http"
+	"strconv"
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+)
+
+type PrometheusRecorder struct {
+	registry                    *prometheus.Registry
+	requestsTotal               *prometheus.CounterVec
+	upstreamLatency             *prometheus.HistogramVec
+	errorsTotal                 *prometheus.CounterVec
+	entropyDistribution         prometheus.Histogram
+	routingDecisionsTotal       *prometheus.CounterVec
+	speculativeTriggersTotal    prometheus.Counter
+	speculativeCancelsTotal     prometheus.Counter
+	speculativeLatencySaved     prometheus.Histogram
+	cacheHitsTotal              prometheus.Counter
+	cacheMissesTotal            prometheus.Counter
+	cacheLookupLatency          prometheus.Histogram
+}
+
+func NewPrometheusRecorder() *PrometheusRecorder {
+	reg := prometheus.NewRegistry()
+
+	requests := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "entropix",
+		Name:      "requests_total",
+		Help:      "Total number of requests by model and HTTP status.",
+	}, []string{"model", "status"})
+
+	latency := prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "entropix",
+		Name:      "upstream_latency_seconds",
+		Help:      "Upstream LLM provider latency in seconds.",
+		Buckets:   []float64{0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30},
+	}, []string{"provider"})
+
+	errors := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "entropix",
+		Name:      "errors_total",
+		Help:      "Total number of errors by type.",
+	}, []string{"type"})
+
+	entropyDist := prometheus.NewHistogram(prometheus.HistogramOpts{
+		Namespace: "entropix",
+		Name:      "entropy_distribution",
+		Help:      "Distribution of per-token Shannon entropy values in bits.",
+		Buckets:   []float64{0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0},
+	})
+
+	routingDecisions := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "entropix",
+		Name:      "routing_decisions_total",
+		Help:      "Total routing decisions by outcome.",
+	}, []string{"decision"})
+
+	specTriggers := prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "entropix",
+		Name:      "speculative_triggers_total",
+		Help:      "Total number of speculative heavyweight calls triggered.",
+	})
+
+	specCancels := prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "entropix",
+		Name:      "speculative_cancellations_total",
+		Help:      "Total number of speculative heavyweight calls cancelled.",
+	})
+
+	specLatency := prometheus.NewHistogram(prometheus.HistogramOpts{
+		Namespace: "entropix",
+		Name:      "speculative_latency_saved_seconds",
+		Help:      "Latency saved by speculative execution in seconds.",
+		Buckets:   []float64{0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30},
+	})
+
+	cacheHits := prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "entropix",
+		Name:      "cache_hits_total",
+		Help:      "Total number of cache hits.",
+	})
+
+	cacheMisses := prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "entropix",
+		Name:      "cache_misses_total",
+		Help:      "Total number of cache misses.",
+	})
+
+	cacheLookup := prometheus.NewHistogram(prometheus.HistogramOpts{
+		Namespace: "entropix",
+		Name:      "cache_lookup_latency_seconds",
+		Help:      "Cache lookup latency in seconds.",
+		Buckets:   []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5},
+	})
+
+	reg.MustRegister(requests, latency, errors, entropyDist, routingDecisions,
+		specTriggers, specCancels, specLatency, cacheHits, cacheMisses, cacheLookup)
+
+	return &PrometheusRecorder{
+		registry:                    reg,
+		requestsTotal:               requests,
+		upstreamLatency:             latency,
+		errorsTotal:                 errors,
+		entropyDistribution:         entropyDist,
+		routingDecisionsTotal:       routingDecisions,
+		speculativeTriggersTotal:    specTriggers,
+		speculativeCancelsTotal:     specCancels,
+		speculativeLatencySaved:     specLatency,
+		cacheHitsTotal:              cacheHits,
+		cacheMissesTotal:            cacheMisses,
+		cacheLookupLatency:          cacheLookup,
+	}
+}
+
+func (p *PrometheusRecorder) RecordRequest(model string, status int) {
+	p.requestsTotal.WithLabelValues(model, strconv.Itoa(status)).Inc()
+}
+
+func (p *PrometheusRecorder) RecordUpstreamLatency(provider string, d time.Duration) {
+	p.upstreamLatency.WithLabelValues(provider).Observe(d.Seconds())
+}
+
+func (p *PrometheusRecorder) RecordError(errorType string) {
+	p.errorsTotal.WithLabelValues(errorType).Inc()
+}
+
+func (p *PrometheusRecorder) RecordEntropy(value float64) {
+	p.entropyDistribution.Observe(value)
+}
+
+func (p *PrometheusRecorder) RecordRoutingDecision(decision string) {
+	p.routingDecisionsTotal.WithLabelValues(decision).Inc()
+}
+
+func (p *PrometheusRecorder) RecordSpeculativeTrigger() {
+	p.speculativeTriggersTotal.Inc()
+}
+
+func (p *PrometheusRecorder) RecordSpeculativeCancellation() {
+	p.speculativeCancelsTotal.Inc()
+}
+
+func (p *PrometheusRecorder) RecordSpeculativeLatencySaved(d time.Duration) {
+	p.speculativeLatencySaved.Observe(d.Seconds())
+}
+
+func (p *PrometheusRecorder) RecordCacheHit() {
+	p.cacheHitsTotal.Inc()
+}
+
+func (p *PrometheusRecorder) RecordCacheMiss() {
+	p.cacheMissesTotal.Inc()
+}
+
+func (p *PrometheusRecorder) RecordCacheLookupLatency(d time.Duration) {
+	p.cacheLookupLatency.Observe(d.Seconds())
+}
+
+func (p *PrometheusRecorder) Handler() http.Handler {
+	return promhttp.HandlerFor(p.registry, promhttp.HandlerOpts{})
+}

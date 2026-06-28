@@ -1,0 +1,86 @@
+package gateway
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"net/http"
+	"time"
+
+	"github.com/DaylaHoang/entropix/internal/cache"
+	"github.com/DaylaHoang/entropix/internal/config"
+	"github.com/DaylaHoang/entropix/internal/analysis"
+	"github.com/DaylaHoang/entropix/internal/metrics"
+	"github.com/DaylaHoang/entropix/internal/router"
+	"github.com/DaylaHoang/entropix/internal/parallel"
+	"github.com/DaylaHoang/entropix/pkg/llm"
+)
+
+type Server struct {
+	httpServer *http.Server
+	cfg        *config.Config
+}
+
+func NewServer(cfg *config.Config, drafter, heavyweight llm.LLMClient, rtr *router.Router, rec metrics.Recorder, cacheStore cache.Store) *Server {
+	mux := http.NewServeMux()
+
+	var exec *parallel.Executor
+	if cfg.Speculative.IsEnabled() {
+		exec = parallel.NewExecutor(parallel.ExecutorConfig{
+			WindowCfg: analysis.WindowConfig{
+				Size:           cfg.Entropy.WindowSize,
+				Threshold:      cfg.Entropy.Threshold,
+				EarlyExitCount: cfg.Entropy.EarlyExitCount,
+			},
+			SoftThresholdMult: cfg.Speculative.SoftThresholdMult,
+		}, heavyweight, rec)
+	}
+
+	chatH := newChatHandler(drafter, heavyweight, rtr, exec, rec, cfg.Entropy, cfg.Speculative, cacheStore, time.Duration(cfg.Cache.InsertTimeoutSeconds)*time.Second)
+	mux.Handle("/v1/chat/completions", chatH)
+
+	if cacheStore != nil {
+		mux.Handle("/v1/cache/", newCacheEvictHandler(cacheStore))
+	}
+
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+	})
+
+	if cfg.Metrics.Enabled {
+		if promRec, ok := rec.(*metrics.PrometheusRecorder); ok {
+			mux.Handle(cfg.Metrics.Path, promRec.Handler())
+		}
+	}
+
+	handler := chain(mux,
+		recoveryMiddleware,
+		loggingMiddleware,
+		requestIDMiddleware,
+	)
+
+	return &Server{
+		cfg: cfg,
+		httpServer: &http.Server{
+			Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
+			Handler:      handler,
+			ReadTimeout:  time.Duration(cfg.Server.ReadTimeout) * time.Second,
+			WriteTimeout: time.Duration(cfg.Server.WriteTimeout) * time.Second,
+			IdleTimeout:  time.Duration(cfg.Server.IdleTimeout) * time.Second,
+		},
+	}
+}
+
+func (s *Server) Start() error {
+	log.Printf("starting gateway on %s", s.httpServer.Addr)
+	if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		return fmt.Errorf("server error: %w", err)
+	}
+	return nil
+}
+
+func (s *Server) Shutdown(ctx context.Context) error {
+	log.Println("shutting down gateway")
+	return s.httpServer.Shutdown(ctx)
+}
