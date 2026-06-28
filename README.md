@@ -10,13 +10,13 @@
 ![Grafana](https://img.shields.io/badge/Grafana-F46800?style=flat-square&logo=grafana&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-2496ED?style=flat-square&logo=docker&logoColor=white)
 
-LLM gateway in Go. Routes each request to a cheap drafter or an expensive heavyweight based on per-token entropy signals — no prompt classifiers, no heuristics. At T=2.0, it cuts inference costs by **91.6%** with **98.2%** accuracy across 518 calibration prompts.
+LLM gateway in Go. Routes each request to a cheap drafter or an expensive heavyweight based on per-token entropy signals - no prompt classifiers, no heuristics. At T=2.0, it cuts inference costs by **91.6%** with **98.2%** accuracy across 518 calibration prompts.
 
 ---
 
 ## The idea
 
-Most LLM proxies either send everything to the expensive model, or use a classifier on the prompt to decide which model to call. I didn't want a classifier — they break when your prompt distribution shifts, and you don't always know when that's happening.
+Most LLM proxies either send everything to the expensive model, or use a classifier on the prompt to decide which model to call. I didn't want a classifier - they break when your prompt distribution shifts, and you don't always know when that's happening.
 
 The thing is, the model already tells you how confident it is. Log-probabilities are right there in every API response. So Entropix watches those signals token by token and escalates to GPT-4.1 only when the drafter gets uncertain. No extra model, no heuristics, just the entropy of the generation itself.
 
